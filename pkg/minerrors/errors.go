@@ -1,4 +1,4 @@
-package minerrors
+package main
 
 import (
 	"fmt"
@@ -19,31 +19,55 @@ func Init() {
 	rootPath = filepath.Dir(file)
 }
 
-// Error - error type containing cause and the stack trace.
-type Error struct {
-	cause error
-	stack []string
+type Tracer interface {
+	Trace() string
+	Error() string
+	JSON() []byte
 }
 
-func (e Error) Error() string {
-	return e.cause.Error()
+type traceInfo struct {
+	file string
+	line int
+	name string
 }
 
-// Cause - cause of the Error.
-func (e Error) Cause() error {
-	return e.cause
+// StorageError - error type containing cause and the stack trace.
+type storageError struct {
+	e     error
+	trace []traceInfo
 }
 
-// NewError - return new Error type.
-func NewError(e error) error {
+func (se storageError) Error() string {
+	return se.e.Error()
+}
+
+// Trace - returns stack trace.
+func (se storageError) Trace() string {
+	var traceArr []string
+	for _, info := range se.trace {
+		traceArr = append(traceArr, fmt.Sprintf("%s:%d:%s",
+			info.file, info.line, info.name))
+	}
+	return strings.Join(traceArr, " ")
+}
+
+func (se storageError) JSON() []byte {
+	return nil
+}
+
+// NewStorageError - return new Error type.
+func NewStorageError(e error) error {
 	if e == nil {
 		return nil
 	}
-
-	var stackStrs []string
+	err := &storageError{}
+	err.e = e
 
 	stack := make([]uintptr, 40)
 	length := runtime.Callers(2, stack)
+	if length > len(stack) {
+		length = len(stack)
+	}
 	stack = stack[:length]
 
 	for _, pc := range stack {
@@ -51,64 +75,49 @@ func NewError(e error) error {
 		fn := runtime.FuncForPC(pc)
 		file, line := fn.FileLine(pc)
 		name := fn.Name()
-		if strings.HasPrefix(name, "runtime") {
-			break
-		}
 		file = strings.TrimPrefix(file, rootPath+string(os.PathSeparator))
-		stackStrs = append(stackStrs, fmt.Sprintf("%s:%d:%s()", file, line, name))
+		err.trace = append(err.trace, traceInfo{file, line, name})
 	}
 
-	return &Error{e, stackStrs}
-}
-
-// Stack - returns top 'n' stack frames. if n is not specified all the frames are returned.
-func (e Error) Stack(n ...int) string {
-	length := len(e.stack)
-	if len(n) != 0 {
-		length = n[0]
-	}
-	return strings.Join(e.stack[:length], " ")
-}
-
-// Is - check if e and original are of the same type.
-func Is(e error, original error) bool {
-	if e == original {
-		return true
-	}
-
-	if e, ok := e.(*Error); ok {
-		return Is(e.cause, original)
-	}
-
-	if original, ok := original.(*Error); ok {
-		return Is(e, original.cause)
-	}
-
-	return false
+	return err
 }
 
 // XLError constructed at XL layer combining errors from the XL's underlying disks
-type XLError struct {
-	cause error
-	stack []string
+type xlError struct {
+	e     error
+	trace []traceInfo
 	// errors from the StorageAPI
 	errs []error
 }
 
-func (xlErr XLError) Error() string {
-	return xlErr.cause.Error()
+func (xe xlError) Error() string {
+	return xe.e.Error()
+}
+
+func (xe xlError) Trace() string {
+	var traceArr []string
+	for _, info := range xe.trace {
+		traceArr = append(traceArr, fmt.Sprintf("%s:%d:%s",
+			info.file, info.line, info.name))
+	}
+	return strings.Join(traceArr, " ")
 }
 
 // NewXLError - returns new XLError type.
-func NewXLError(err error, errs ...error) error {
-	if err == nil {
+func NewXLError(e error, errs ...error) error {
+	if e == nil {
 		return nil
 	}
 
-	var stackStrs []string
+	err := &xlError{}
+	err.e = e
+	err.errs = errs
 
 	stack := make([]uintptr, 40)
 	length := runtime.Callers(2, stack)
+	if length > len(stack) {
+		length = len(stack)
+	}
 	stack = stack[:length]
 
 	for _, pc := range stack {
@@ -116,12 +125,9 @@ func NewXLError(err error, errs ...error) error {
 		fn := runtime.FuncForPC(pc)
 		file, line := fn.FileLine(pc)
 		name := fn.Name()
-		if strings.HasPrefix(name, "runtime") {
-			break
-		}
 		file = strings.TrimPrefix(file, rootPath+string(os.PathSeparator))
-		stackStrs = append(stackStrs, fmt.Sprintf("%s:%d:%s()", file, line, name))
+		err.trace = append(err.trace, traceInfo{file, line, name})
 	}
 
-	return &XLError{err, stackStrs, errs}
+	return err
 }
